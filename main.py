@@ -11,6 +11,7 @@ import json
 import os
 import sys
 import time
+import config
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -18,13 +19,19 @@ if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
 
-def main():
+def main(*, offline: bool = False):
+    if offline:
+        config.OFFLINE_MODE = True
     print("=" * 60)
     print("LAB 18: PRODUCTION RAG PIPELINE")
     print("=" * 60)
     start = time.time()
 
-    os.makedirs("reports", exist_ok=True)
+    os.makedirs(config.REPORTS_DIR, exist_ok=True)
+    if config.OFFLINE_MODE:
+        print("Chế độ cục bộ: tìm kiếm dự phòng, câu trả lời trích xuất; RAGAS sẽ được bỏ qua.")
+    elif not config.OPENAI_API_KEY:
+        print("Chưa có OPENAI_API_KEY hợp lệ: dùng trích xuất cục bộ và bỏ qua RAGAS.")
 
     # Step 1: Basic Baseline
     print("\n📌 STEP 1: Running Basic RAG Baseline...")
@@ -37,18 +44,13 @@ def main():
     print("-" * 40)
     from src.pipeline import build_pipeline, evaluate_pipeline
     search, reranker = build_pipeline()
-    prod_results = evaluate_pipeline(search, reranker)
-
-    # Ensure reports are located in reports/
-    for f in ["ragas_report.json", "naive_baseline_report.json"]:
-        if os.path.exists(f):
-            os.replace(f, f"reports/{f}")
+    evaluate_pipeline(search, reranker)
 
     # Step 3: Comparison
     print("\n📌 STEP 3: Comparison")
     print("-" * 40)
-    naive_path = "reports/naive_baseline_report.json"
-    prod_path = "reports/ragas_report.json"
+    naive_path = os.path.join(config.REPORTS_DIR, "naive_baseline_report.json")
+    prod_path = os.path.join(config.REPORTS_DIR, "ragas_report.json")
 
     if os.path.exists(naive_path) and os.path.exists(prod_path):
         with open(naive_path, encoding="utf-8") as f:
@@ -59,6 +61,9 @@ def main():
         print(f"\n{'Metric':<25} {'Basic':>8} {'Production':>12} {'Δ':>8}")
         print("-" * 55)
         for m in ["faithfulness", "answer_relevancy", "context_precision", "context_recall"]:
+            if any(r.get("evaluation_status", "completed") != "completed" for r in (naive, prod)):
+                print(f"  {m:<23} {'N/A':>8} {'N/A':>12} {'N/A':>8}")
+                continue
             n = naive.get("aggregate", {}).get(m, 0)
             p = prod.get("aggregate", {}).get(m, 0)
             d = p - n
@@ -74,4 +79,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    import argparse
+    parser = argparse.ArgumentParser(description="Run basic and production RAG pipelines")
+    parser.add_argument("--offline", action="store_true", help="Chạy cục bộ, không gọi API hay tải model")
+    main(offline=parser.parse_args().offline)

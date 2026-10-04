@@ -10,6 +10,12 @@ import os
 import sys
 import subprocess
 
+ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def _resolve(path: str) -> str:
+    return os.path.join(ROOT_DIR, path)
+
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 if hasattr(sys.stderr, "reconfigure"):
@@ -17,7 +23,7 @@ if hasattr(sys.stderr, "reconfigure"):
 
 
 def check_file(path: str, required: bool = True) -> bool:
-    if os.path.exists(path):
+    if os.path.exists(_resolve(path)):
         print(f"  ✅ {path}")
         return True
     elif required:
@@ -30,15 +36,20 @@ def check_file(path: str, required: bool = True) -> bool:
 
 def check_json(path: str, required_keys: list[str]) -> bool:
     try:
-        with open(path, encoding="utf-8") as f:
+        with open(_resolve(path), encoding="utf-8") as f:
             data = json.load(f)
+        if not isinstance(data, dict):
+            print(f"  ❌ {path} phải chứa một JSON object")
+            return False
         missing = [k for k in required_keys if k not in data]
         if missing:
             print(f"  ❌ {path} thiếu keys: {missing}")
             return False
         print(f"  ✅ {path} — keys OK")
+        if data.get("evaluation_status") in {"skipped", "failed", "partial"}:
+            print("  ⚠️  Báo cáo chưa có điểm RAGAS hợp lệ; cần API key để đánh giá thật.")
         return True
-    except (json.JSONDecodeError, FileNotFoundError) as e:
+    except (json.JSONDecodeError, OSError) as e:
         print(f"  ❌ {path} — {e}")
         return False
 
@@ -46,7 +57,7 @@ def check_json(path: str, required_keys: list[str]) -> bool:
 def check_todos() -> int:
     """Count remaining TODO markers in src/."""
     count = 0
-    for root, _, files in os.walk("src"):
+    for root, _, files in os.walk(_resolve("src")):
         for f in files:
             if f.endswith(".py"):
                 with open(os.path.join(root, f), encoding="utf-8") as fh:
@@ -62,15 +73,24 @@ def run_tests() -> tuple[int, int]:
         import re
         result = subprocess.run(
             [sys.executable, "-m", "pytest", "tests/", "-v", "--tb=no", "-q"],
-            capture_output=True, text=True, timeout=120, encoding="utf-8", errors="replace"
+            capture_output=True, text=True, timeout=120, encoding="utf-8", errors="replace",
+            cwd=ROOT_DIR,
         )
         lines = result.stdout.strip().split("\n")
         summary = lines[-1] if lines else ""
         m_pass = re.search(r"(\d+)\s+passed", summary)
         m_fail = re.search(r"(\d+)\s+failed", summary)
+        m_error = re.search(r"(\d+)\s+errors?", summary)
         passed = int(m_pass.group(1)) if m_pass else 0
         failed = int(m_fail.group(1)) if m_fail else 0
-        total = passed + failed
+        collection_errors = int(m_error.group(1)) if m_error else 0
+        total = passed + failed + collection_errors
+        if result.returncode != 0:
+            print(result.stdout[-2500:])
+            if result.stderr:
+                print(result.stderr[-1000:])
+            if total == passed:
+                return 0, 0
         return passed, total
     except Exception as e:
         print(f"  ⚠️  pytest error: {e}")
@@ -99,17 +119,18 @@ def validate():
 
     # 3. Analysis
     print("\n📝 Analysis:")
-    check_file("analysis/failure_analysis.md")
+    if not check_file("analysis/failure_analysis.md"):
+        errors += 1
 
     # 4. Individual reflections
     print("\n👤 Individual reflections:")
     reflections = []
     ref_dir = "analysis/reflections"
-    if os.path.isdir(ref_dir):
-        reflections.extend([f"{ref_dir}/{f}" for f in os.listdir(ref_dir)
+    if os.path.isdir(_resolve(ref_dir)):
+        reflections.extend([f"{ref_dir}/{f}" for f in os.listdir(_resolve(ref_dir))
                             if f.startswith("reflection_") and f.endswith(".md") and f != "reflection_TEMPLATE.md"])
-    if os.path.isdir("analysis"):
-        reflections.extend([f"analysis/{f}" for f in os.listdir("analysis")
+    if os.path.isdir(_resolve("analysis")):
+        reflections.extend([f"analysis/{f}" for f in os.listdir(_resolve("analysis"))
                             if f.startswith("reflection_") and f.endswith(".md") and f != "reflection_TEMPLATE.md"])
 
     if reflections:
@@ -131,18 +152,22 @@ def validate():
     passed, total = run_tests()
     if total > 0:
         pct = passed / total * 100
-        print(f"  {'✅' if pct >= 80 else '⚠️'} {passed}/{total} tests passed ({pct:.0f}%)")
+        print(f"  {'✅' if passed == total else '❌'} {passed}/{total} tests passed ({pct:.0f}%)")
+        if passed != total:
+            errors += 1
     else:
         print("  ⚠️  Không chạy được tests")
+        errors += 1
 
     # 7. Summary
     print("\n" + "=" * 50)
     if errors == 0:
-        print("🚀 Bài lab sẵn sàng để nộp!")
+        print("✅ Kiểm tra mã nguồn và định dạng đạt. Xem lưu ý về RAGAS và reflection ở trên.")
     else:
         print(f"❌ Có {errors} lỗi. Sửa trước khi nộp.")
     print("=" * 50)
+    return 1 if errors else 0
 
 
 if __name__ == "__main__":
-    validate()
+    sys.exit(validate())
